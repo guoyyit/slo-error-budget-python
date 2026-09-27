@@ -114,9 +114,9 @@ class SLOService:
             if existing is None:
                 rt = _Runtime(
                     config=config,
-                    period_start=align_period_start(
-                        self._clock.now(), config.budget_window_seconds
-                    ),
+                    # The first budget period begins when monitoring starts;
+                    # later periods are fixed multiples of the window beyond it.
+                    period_start=self._clock.now(),
                 )
                 self._services[config.service] = rt
             else:
@@ -297,16 +297,20 @@ class SLOService:
         origin, or the last explicit reset anchor), giving a deterministic
         old/new budget boundary.
         """
-        cfg = rt.config
-        # Roll forward along fixed multiples from the active anchor. Only
-        # advance while not latched exhausted: an exhausted period must not
-        # silently roll into a fresh budget without an explicit reset.
-        if not rt.exhausted_latch:
-            next_start = rt.period_start + cfg.budget_window_seconds
-            while next_start <= now:
-                rt.period_start = next_start
-                next_start += cfg.budget_window_seconds
-        return rt.period_start
+    def _current_period_start(self, rt: _Runtime, now: float) -> float:
+        """Return the active budget period start.
+
+        Periods follow fixed multiples of ``budget_window_seconds`` aligned to
+        the epoch origin, or to the last explicit :meth:`reset_budget` anchor
+        (which itself sits on a boundary), so the old/new budget boundary is
+        deterministic. An exhausted period is latched and never rolls into a
+        fresh budget without an explicit reset.
+        """
+        if rt.exhausted_latch:
+            return rt.period_start
+        return align_period_start(
+            now, rt.config.budget_window_seconds, anchor=rt.period_start
+        )
 
     def _evaluate_and_persist(self, rt: _Runtime) -> None:
         """Recompute derived state for one ingest and durably record it."""
