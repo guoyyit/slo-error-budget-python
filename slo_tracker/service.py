@@ -211,39 +211,65 @@ class SLOService:
         )
         return breached, short, long
 
-    def _render_alert(self, rt: _Runtime, now: float) -> AlertStatus:
-        """Pure read: render current alert state without mutating anything.
+    def _transition(
+        self, rt: _Runtime, now: float
+    ) -> tuple[AlertConditionState, bool, WindowBurn, WindowBurn, str]:
+        """Pure alert transition. Returns ``(state, fired_now, short, long, detail)``.
 
-        An *active* firing episode (the most recent event fired and has not
-        resolved) reports FIRING while the condition still holds. A repeat hit
-        during the quiet window of an episode that had already resolved is
-        shown as SUPPRESSED_COOLDOWN.
+        Rules:
+        * breach + episode currently FIRING (never resolved) -> keep FIRING,
+          no repeat notification for the same persistent condition;
+        * breach after the condition had resolved, within the quiet window ->
+          SUPPRESSED_COOLDOWN;
+        * breach outside any quiet window -> a new FIRING episode;
+        * no breach -> RESOLVED if an episode ever fired, else IDLE.
+
+        The quiet window runs from ``last_fired_at`` for ``cooldown_seconds``;
+        resolving early does not shorten it.
         """
         breached, short, long = self._is_breached(rt.config, rt.observations, now)
-        episode_active = (
-            rt.alert_state is AlertConditionState.FIRING
-        )
         in_cooldown = rt.cooldown_until is not None and now < rt.cooldown_until
 
         if not breached:
-            resolved = rt.last_fired_at is not None
-            state = (
-                AlertConditionState.RESOLVED if resolved else AlertConditionState.IDLE
+            if rt.alert_state is AlertConditionState.IDLE:
+                return AlertConditionState.IDLE, False, short, long, "no breach"
+            return (
+                AlertConditionState.RESOLVED,
+                False,
+                short,
+                long,
+                "condition cleared; alert resolved",
             )
-            detail = "condition cleared" if resolved else "no breach"
-        elif episode_active:
-            state = AlertConditionState.FIRING
-            detail = "multi-window burn thresholds exceeded; alert active"
-        elif in_cooldown:
-            state = AlertConditionState.SUPPRESSED_COOLDOWN
-            detail = (
-                f"breached but suppressed during cooldown until "
-                f"{rt.cooldown_until}"
-            )
-        else:
-            state = AlertConditionState.FIRING
-            detail = "multi-window burn thresholds exceeded; alert firing"
 
+        if rt.alert_state is AlertConditionState.FIRING:
+            return (
+                AlertConditionState.FIRING,
+                False,
+                short,
+                long,
+                "condition still breached; active episode (no repeat alert)",
+            )
+
+        if in_cooldown:
+            return (
+                AlertConditionState.SUPPRESSED_COOLDOWN,
+                False,
+                short,
+                long,
+                f"breached but suppressed during cooldown until {rt.cooldown_until}",
+            )
+
+        return (
+            AlertConditionState.FIRING,
+            True,
+            short,
+            long,
+            "multi-window burn thresholds exceeded; alert fired",
+        )
+
+    def _render_alert(self, rt: _Runtime, now: float) -> AlertStatus:
+        """Pure read: render alert state without mutating or persisting."""
+        state, _fired, short, long, detail = self._transition(rt, now)
         return AlertStatus(
             service=rt.config.service,
             state=state,
@@ -251,52 +277,19 @@ class SLOService:
             long_window=long,
             last_fired_at=rt.last_fired_at,
             cooldown_until=rt.cooldown_until,
-            breached=breached,
+            breached=bool(
+                short.burn_rate is not None
+                and long.burn_rate is not None
+            )
+            and state
+            in (
+                AlertConditionState.FIRING,
+                AlertConditionState.SUPPRESSED_COOLDOWN,
+            ),
             suppressed=state is AlertConditionState.SUPPRESSED_COOLDOWN,
             detail=detail,
         )
 
-    def _commit_alert(self, rt: _Runtime, now: float) -> tuple[AlertStatus, bool]:
-        """Commit alert-machine transitions at ingest time.
-
-        Returns ``(status, fired_new_episode)``. A new firing episode is only
-        recorded when the condition is breached outside an active cooldown.
-        A condition that clears ends the episode (cooldown discarded) so a
-        later, genuinely new breach can alert immediately.
-        """
-        breached, short, long = self._is_breached(rt.config, rt.observations, now)
-        in_cooldown = rt.cooldown_until is not None and now < rt.cooldown_until
-        episode_active = rt.alert_state is AlertConditionState.FIRING
-
-        fired = False
-        if not breached:
-            # Condition no longer holds: end any open episode so its cooldown
-            # cannot suppress a future, distinct incident.
-            rt.alert_state = AlertConditionState.RESOLVED
-            rt.cooldown_until = None
-        elif episode_active:
-            # Same persistent episode: keep firing; do not re-notify.
-            rt.alert_state = AlertConditionState.FIRING
-        elif in_cooldown:
-            # Repeat hit within the quiet window of a resolved episode.
-            rt.alert_state = AlertConditionState.SUPPRESSED_COOLDOWN
-        else:
-            # A genuinely new episode starts.
-            rt.last_fired_at = now
-            rt.cooldown_until = now + rt.config.cooldown_seconds
-            rt.alert_state = AlertConditionState.FIRING
-            fired = True
-
-        status = self._render_alert(rt, now)
-        return status, fired
-
-    def _current_period_start(self, rt: _Runtime, now: float) -> float:
-        """Return the active period start, rolling the fixed window if due.
-
-        Periods are anchored at multiples of ``budget_window_seconds`` (epoch
-        origin, or the last explicit reset anchor), giving a deterministic
-        old/new budget boundary.
-        """
     def _current_period_start(self, rt: _Runtime, now: float) -> float:
         """Return the active budget period start.
 
@@ -315,7 +308,7 @@ class SLOService:
     def _evaluate_and_persist(self, rt: _Runtime) -> None:
         """Recompute derived state for one ingest and durably record it."""
         now = self._clock.now()
-        alert, fired = self._commit_alert(rt, now)
+        alert, fired, _changed = self._commit_alert_transition(rt, now)
         if fired:
             # Sealing watermark: the long-window left edge for this firing.
             rt.watermark = max(
@@ -384,8 +377,38 @@ class SLOService:
             raise KeyError(f"service '{service}' is not configured")
         return rt
 
-    def _alert_snapshot(self, rt: _Runtime) -> AlertStatus:
-        return self._render_alert(rt, self._clock.now())
+    def _commit_alert_transition(
+        self, rt: _Runtime, now: float
+    ) -> tuple[AlertStatus, bool, bool]:
+        """Advance the alert machine. Returns ``(status, fired_now, changed)``.
+
+        Time-driven transitions (e.g. the condition clearing as events age
+        out) also become committed state, keeping reads and the durable log
+        consistent with what was observed.
+        """
+        state, fired, short, long, detail = self._transition(rt, now)
+        changed = state is not rt.alert_state
+        if fired:
+            rt.last_fired_at = now
+            rt.cooldown_until = now + rt.config.cooldown_seconds
+            state = AlertConditionState.FIRING
+        rt.alert_state = state
+        status = AlertStatus(
+            service=rt.config.service,
+            state=state,
+            short_window=short,
+            long_window=long,
+            last_fired_at=rt.last_fired_at,
+            cooldown_until=rt.cooldown_until,
+            breached=state
+            in (
+                AlertConditionState.FIRING,
+                AlertConditionState.SUPPRESSED_COOLDOWN,
+            ),
+            suppressed=state is AlertConditionState.SUPPRESSED_COOLDOWN,
+            detail=detail,
+        )
+        return status, fired, changed or fired
 
     def query(self, service: str) -> ServiceSnapshot:
         """Return a self-consistent snapshot from one committed point in time."""
@@ -419,7 +442,17 @@ class SLOService:
                     burn_fraction=budget.burn_fraction,
                     exhausted=True,
                 )
-            alert = self._render_alert(rt, now)
+            # Advance time-driven alert transitions and commit any change so
+            # the returned status is a committed, recoverable state.
+            alert, _fired, alert_changed = self._commit_alert_transition(rt, now)
+            if alert_changed:
+                self._store.append_state(
+                    rt.config.service,
+                    budget,
+                    alert,
+                    watermark=rt.watermark,
+                    period_start=rt.period_start,
+                )
             return ServiceSnapshot(
                 config=rt.config,
                 evaluated_at=now,
