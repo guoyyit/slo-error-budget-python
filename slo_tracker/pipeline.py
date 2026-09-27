@@ -9,7 +9,7 @@ whole system reproducible locally with no network or credentials.
 from __future__ import annotations
 
 import queue
-from typing import Callable
+from collections.abc import Callable
 
 from .models import Observation, RejectReason
 
@@ -24,7 +24,7 @@ class InMemoryPipeline:
 
     def __init__(self, submitter: Submitter) -> None:
         self._submit = submitter
-        self._queue: "queue.Queue[Observation]" = queue.Queue()
+        self._queue: queue.Queue[Observation] = queue.Queue()
         self._results: list[
             tuple[Observation, bool, RejectReason | None, str]
         ] = []

@@ -13,18 +13,18 @@ from slo_tracker.storage import EventStore
 
 
 def make_config(**overrides) -> SLOConfig:
-    base = dict(
-        service="svc",
-        availability_target=0.90,
-        availability_window_seconds=300.0,
-        short_window_seconds=60.0,
-        long_window_seconds=300.0,
-        alert_short_burn=2.0,
-        alert_long_burn=2.0,
-        cooldown_seconds=300.0,
-        budget_window_seconds=3600.0,
-        budget_expected_requests=None,
-    )
+    base = {
+        "service": "svc",
+        "availability_target": 0.90,
+        "availability_window_seconds": 300.0,
+        "short_window_seconds": 60.0,
+        "long_window_seconds": 300.0,
+        "alert_short_burn": 2.0,
+        "alert_long_burn": 2.0,
+        "cooldown_seconds": 300.0,
+        "budget_window_seconds": 3600.0,
+        "budget_expected_requests": None,
+    }
     base.update(overrides)
     return SLOConfig(**base)
 

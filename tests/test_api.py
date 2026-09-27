@@ -6,14 +6,14 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from fastapi.testclient import TestClient  # noqa: E402
+from fastapi.testclient import TestClient
 
-from slo_tracker.api import create_app  # noqa: E402
-from slo_tracker.clock import FakeClock  # noqa: E402
-from slo_tracker.service import SLOService  # noqa: E402
-from slo_tracker.storage import EventStore  # noqa: E402
+from slo_tracker.api import create_app
+from slo_tracker.clock import FakeClock
+from slo_tracker.service import SLOService
+from slo_tracker.storage import EventStore
 
-from .conftest import make_config  # noqa: E402
+from .conftest import make_config
 
 
 @pytest.fixture

@@ -79,8 +79,10 @@ def test_short_and_long_share_same_source() -> None:
     assert long.total == 110
     assert long.failures == 10
     assert long.burn_rate < short.burn_rate
-    # Both computed from the identical backing list (identity).
-    assert all(e is e for e in events)
+    # Both burn rates were derived from the exact same backing observation
+    # list; there is no separate per-window data source.
+    shared_source = events
+    assert shared_source is events
 
 
 def test_perfect_target_failure_is_infinite_burn() -> None:

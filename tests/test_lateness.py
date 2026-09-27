@@ -16,7 +16,7 @@ from .conftest import make_config, obs
 
 
 def test_duplicate_replay_is_rejected_and_not_double_counted(service: SLOService) -> None:
-    accepted, reason, _ = service.ingest(obs("x1", 950.0, Outcome.SUCCESS))
+    accepted, _reason, _ = service.ingest(obs("x1", 950.0, Outcome.SUCCESS))
     assert accepted
     # Replay the exact same observation (including id).
     accepted2, reason2, _ = service.ingest(obs("x1", 950.0, Outcome.SUCCESS))

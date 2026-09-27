@@ -33,7 +33,6 @@ from .models import (
 from .service import SLOService
 from .storage import EventStore
 
-
 # --------------------------------------------------------------- request models
 
 

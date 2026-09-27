@@ -141,7 +141,7 @@ def compute_budget(
     """Error-budget consumption for the anchored period ``[start, end)``."""
     end = period_end if period_end is not None else now
     items = window_slice(observations, period_start, end)
-    total, successes, failures = _counts(items)
+    total, _successes, failures = _counts(items)
 
     expected = (
         config.budget_expected_requests

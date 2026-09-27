@@ -34,10 +34,9 @@ from .models import (
     AvailabilityResult,
     BudgetState,
     Observation,
-    Outcome,
     RejectReason,
-    SLOConfig,
     ServiceSnapshot,
+    SLOConfig,
     WindowBurn,
 )
 from .storage import EventStore
@@ -444,8 +443,14 @@ class SLOService:
                 )
             # Advance time-driven alert transitions and commit any change so
             # the returned status is a committed, recoverable state.
-            alert, _fired, alert_changed = self._commit_alert_transition(rt, now)
-            if alert_changed:
+            alert, alert_fired, alert_changed = self._commit_alert_transition(rt, now)
+            if alert_fired:
+                # Keep the sealing watermark consistent even when a new
+                # episode is first observed via a query after cooldown expiry.
+                rt.watermark = max(
+                    rt.watermark, now - rt.config.long_window_seconds
+                )
+            if alert_changed or alert_fired:
                 self._store.append_state(
                     rt.config.service,
                     budget,

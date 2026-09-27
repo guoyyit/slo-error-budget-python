@@ -41,7 +41,7 @@ def test_concurrent_ingests_are_all_committed_once(
                 idx = tid * per_thread + i
                 outcome = Outcome.FAILURE if idx % 50 == 0 else Outcome.SUCCESS
                 svc.ingest(obs(f"t{tid}-{i}", 1000.0 + (idx % 250) * 0.5, outcome))
-        except Exception as exc:  # pragma: no cover - surfaced below
+        except Exception as exc:  # noqa: BLE001 - surface any worker failure
             errors.append(exc)
 
     threads = [threading.Thread(target=worker, args=(t,)) for t in range(n_threads)]
